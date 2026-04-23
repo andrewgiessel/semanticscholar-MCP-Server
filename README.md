@@ -107,6 +107,22 @@ uv run ruff format .
 uv run pre-commit run --all-files
 ```
 
+## Docker
+
+Build the image with:
+
+```sh
+docker build -t semanticscholar-mcp-server .
+```
+
+Run the packaged server with:
+
+```sh
+docker run --rm -i \
+  -e SEMANTIC_SCHOLAR_API_KEY="$SEMANTIC_SCHOLAR_API_KEY" \
+  semanticscholar-mcp-server
+```
+
 ## Usage with Claude Desktop
 
 Add this configuration to your `claude_desktop_config.json`:
