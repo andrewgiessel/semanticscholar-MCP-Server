@@ -4,13 +4,8 @@ This project implements a Model Context Protocol (MCP) server for interacting wi
 
 ## Why This Fork?
 
-This fork keeps the original project intent but modernizes the implementation and maintenance story:
-
-- packaged Python module with `uv` workflows
-- typed helper and MCP response models
-- automated tests, linting, formatting, and type checking
-- rate-limit-aware client behavior with throttling, retries, and API-key fallback
-- cleaner documentation for local and fork-based use
+This repository is a maintained fork of the original project at [JackKuo666/semanticscholar-MCP-Server](https://github.com/JackKuo666/semanticscholar-MCP-Server).
+The goal of this fork is to keep the original idea while improving packaging, reliability, typing, and developer tooling.
 
 ## ✨ Features
 
