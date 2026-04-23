@@ -478,9 +478,9 @@ def format_reference_record(reference: dict[str, object], paper_key: str) -> Rel
     }
 
 
-def _has_more(total: int | None, offset: int, returned: int) -> bool:
+def _has_more(total: int | None, offset: int, returned: int, limit: int) -> bool:
     if total is None:
-        return returned > 0
+        return returned == limit
     return offset + returned < total
 
 
@@ -583,7 +583,7 @@ def get_citations_page(client: CitationsPageClient, paper_id: str, limit: int = 
         "offset": offset,
         "limit": limit,
         "returned": len(items),
-        "hasMore": _has_more(total, offset, len(items)),
+        "hasMore": _has_more(total, offset, len(items), limit),
         "items": items,
     }
 
@@ -600,7 +600,7 @@ def get_references_page(client: ReferencesPageClient, paper_id: str, limit: int 
         "offset": offset,
         "limit": limit,
         "returned": len(items),
-        "hasMore": _has_more(total, offset, len(items)),
+        "hasMore": _has_more(total, offset, len(items), limit),
         "items": items,
     }
 

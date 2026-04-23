@@ -619,7 +619,7 @@ def test_get_references_page_formats_rich_paginated_response():
         def get_paper_references_page(self, paper_id, limit=100, offset=0):
             assert (paper_id, limit, offset) == ("paper-1", 2, 0)
             return {
-                "total": 12,
+                "total": None,
                 "data": [
                     {
                         "contexts": None,
@@ -644,7 +644,7 @@ def test_get_references_page_formats_rich_paginated_response():
 
     result = search_module.get_references_page(FakeClient(), "paper-1", 2, 0)
 
-    assert result["hasMore"] is True
+    assert result["hasMore"] is False
     assert result["items"][0]["pmid"] == "9988"
 
 
@@ -727,3 +727,8 @@ def test_get_citations_page_validates_arguments():
         assert "limit" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_has_more_uses_limit_when_total_is_unknown():
+    assert search_module._has_more(None, 0, 100, 100) is True
+    assert search_module._has_more(None, 0, 42, 100) is False
