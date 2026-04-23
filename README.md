@@ -1,7 +1,5 @@
 # 🎓 Semantic Scholar MCP Server
 
-[![smithery badge](https://smithery.ai/badge/@JackKuo666/semanticscholar-mcp-server)](https://smithery.ai/server/@JackKuo666/semanticscholar-mcp-server)
-
 This project implements a Model Context Protocol (MCP) server for interacting with the Semantic Scholar API. It provides tools for searching papers, retrieving paper and author details, and fetching citations and references.
 
 ## ✨ Features
@@ -9,6 +7,8 @@ This project implements a Model Context Protocol (MCP) server for interacting wi
 - 🔍 Search for papers on Semantic Scholar
 - 📄 Retrieve detailed information about specific papers
 - 👤 Get author details
+- 👥 Search for authors and list their papers
+- 💡 Get recommended papers for a seed paper
 - 🔗 Fetch citations and references for a paper
 
 ## 📋 Prerequisites
@@ -18,42 +18,10 @@ This project implements a Model Context Protocol (MCP) server for interacting wi
 
 ## 🚀 Installation
 
-### Installing via Smithery
-
-To install semanticscholar Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@JackKuo666/semanticscholar-mcp-server):
-
-#### claude
-
-```sh
-npx -y @smithery/cli@latest install @JackKuo666/semanticscholar-mcp-server --client claude --config "{}"
-```
-
-#### Cursor
-
-Paste the following into Settings → Cursor Settings → MCP → Add new server:
-
-- Mac/Linux
-
-```sh
-npx -y @smithery/cli@latest run @JackKuo666/semanticscholar-mcp-server --client cursor --config "{}" 
-```
-
-#### Windsurf
-
-```sh
-npx -y @smithery/cli@latest install @JackKuo666/semanticscholar-mcp-server --client windsurf --config "{}"
-```
-
-### CLine
-
-```sh
-npx -y @smithery/cli@latest install @JackKuo666/semanticscholar-mcp-server --client cline --config "{}"
-```
-
 1. Clone this repository:
 
    ```sh
-   git clone https://github.com/JackKuo666/semanticscholar-MCP-Server.git
+   git clone <your-fork-url>
    cd semanticscholar-MCP-Server
    ```
 
@@ -63,12 +31,18 @@ npx -y @smithery/cli@latest install @JackKuo666/semanticscholar-mcp-server --cli
    uv sync
    ```
 
+3. Optional: add a Semantic Scholar API key to a local `.env` file:
+
+   ```sh
+   echo "SEMANTIC_SCHOLAR_API_KEY=your-key-here" > .env
+   ```
+
 ## 🖥️ Usage
 
 1. Start the Semantic Scholar MCP server:
 
    ```sh
-   uv run python semantic_scholar_server.py
+   uv run semanticscholar-mcp-server
    ```
 
 2. The server will start and listen for MCP requests.
@@ -78,7 +52,13 @@ npx -y @smithery/cli@latest install @JackKuo666/semanticscholar-mcp-server --cli
    - 🔍 `search_semantic_scholar`: Search for papers using a query string
    - 📄 `get_semantic_scholar_paper_details`: Get details of a specific paper
    - 👤 `get_semantic_scholar_author_details`: Get details of a specific author
+   - 👥 `search_semantic_scholar_authors`: Search for authors by name
+   - 📚 `get_semantic_scholar_author_papers`: Get papers for a specific author
+   - 💡 `get_semantic_scholar_recommendations`: Get recommended papers for a seed paper
    - 🔗 `get_semantic_scholar_citations_and_references`: Get citations and references for a paper
+
+This repository uses the `semanticscholar_mcp_server` Python package as its only entrypoint.
+If `SEMANTIC_SCHOLAR_API_KEY` is configured, the server will try authenticated requests first. If Semantic Scholar responds with `403 Forbidden`, the server automatically disables key usage for the rest of the process and falls back to the public API. All Semantic Scholar requests are client-side throttled to at most 1 request per second, and public API requests also use tenacity-based exponential backoff retries for transient `429` rate limits.
 
 ## Usage with Claude Desktop
 
@@ -96,7 +76,8 @@ Add this configuration to your `claude_desktop_config.json`:
         "/path/to/semanticscholar-MCP-Server",
         "run",
         "python",
-        "semantic_scholar_server.py"
+        "-m",
+        "semanticscholar_mcp_server"
       ]
       }
   }
@@ -115,7 +96,8 @@ Add this configuration to your `claude_desktop_config.json`:
         "D:\\code\\YOUR\\PATH\\semanticscholar-MCP-Server",
         "run",
         "python",
-        "semantic_scholar_server.py"
+        "-m",
+        "semanticscholar_mcp_server"
       ],
       "env": {},
       "disabled": false,
@@ -137,7 +119,8 @@ Using with Cline
         "/home/YOUR/PATH/semanticscholar-MCP-Server",
         "run",
         "python",
-        "semantic_scholar_server.py"
+        "-m",
+        "semanticscholar_mcp_server"
       ],
       "env": {},
       "disabled": false,
@@ -149,8 +132,8 @@ Using with Cline
 
 ## 📁 File Structure
 
-- 📜 `semantic_scholar_search.py`: Contains functions for interacting with the Semantic Scholar API
-- 🖥️ `semantic_scholar_server.py`: Implements the MCP server and defines the available tools
+- 📦 `semanticscholar_mcp_server/`: Package containing the MCP server, entrypoint, and Semantic Scholar client helpers
+- 🧪 `tests/`: `pytest` unit tests for the helper layer
 
 ## 🤝 Contributing
 
