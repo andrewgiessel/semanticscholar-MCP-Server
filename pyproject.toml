@@ -7,7 +7,27 @@ name = "semanticscholar-mcp-server"
 version = "0.1.0"
 description = "MCP server for interacting with the Semantic Scholar API."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
+authors = [
+  { name = "Andrew Giessel" },
+]
+keywords = [
+  "mcp",
+  "model-context-protocol",
+  "semantic-scholar",
+  "research",
+  "papers",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "bs4",
   "mcp",
@@ -26,5 +46,19 @@ package = true
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.6.0",
+    "pyright>=1.1.409",
     "pytest>=9.0.3",
+    "ruff>=0.15.11",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
