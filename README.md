@@ -77,12 +77,6 @@ If `SEMANTIC_SCHOLAR_API_KEY` is configured, the server will try authenticated r
 
 Large citation and reference sets are exposed through paginated tools so large papers stay usable in MCP clients. Related-paper responses include richer fields such as abstract, venue, citation count, publication types, URLs, and external ids when available.
 
-### Notes on Citation Harvesting
-
-The paginated citation tools were verified on the `Large Language Bayes` seed paper. `get_semantic_scholar_citations` paginated cleanly and returned the fields needed for triage and CSV export workflows, including `paperId`, `title`, `abstract`, `year`, `authors`, `venue`, `citationCount`, `externalIds` / DOI / arXiv ids, `contexts`, and `isInfluential`. In practice, this removes both of the earlier blockers: response size is no longer the limiting factor, and the returned metadata is rich enough to build a filtered shortlist without a second round trip per citing paper.
-
-One caveat to keep an eye on: on that small seed, the response came back with `total: null` and `hasMore: true` at the same time. That pagination behavior should be verified again on a medium-sized seed before depending on `total` for a long-running harvest loop.
-
 ### Behavior Knobs
 
 The following environment variables can be used to tune runtime behavior:
