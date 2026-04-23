@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "semanticscholar-mcp-server"
 version = "0.1.0"
@@ -7,9 +11,20 @@ requires-python = ">=3.10"
 dependencies = [
   "bs4",
   "mcp",
+  "python-dotenv",
   "requests",
   "semanticscholar",
+  "tenacity>=9.1.4",
 ]
 
+[project.scripts]
+semanticscholar-mcp-diagnose = "semanticscholar_mcp_server.diagnose_api:main"
+semanticscholar-mcp-server = "semanticscholar_mcp_server.server:main"
+
 [tool.uv]
-package = false
+package = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
