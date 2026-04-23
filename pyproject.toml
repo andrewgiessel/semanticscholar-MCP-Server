@@ -1,0 +1,15 @@
+[project]
+name = "semanticscholar-mcp-server"
+version = "0.1.0"
+description = "MCP server for interacting with the Semantic Scholar API."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "bs4",
+  "mcp",
+  "requests",
+  "semanticscholar",
+]
+
+[tool.uv]
+package = false
