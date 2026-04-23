@@ -26,11 +26,13 @@ class PaperStub:
     title: str | None
     abstract: str | None = None
     year: int | None = None
+    publicationDate: str | None = None
     authors: list[AuthorStub] = field(default_factory=list)
     url: str | None = None
     venue: str | None = None
     publicationTypes: list[str] | None = None
     citationCount: int | None = None
+    externalIds: dict[str, str] | None = None
     citations: list[PaperStub] = field(default_factory=list)
     references: list[PaperStub] = field(default_factory=list)
 
@@ -92,6 +94,7 @@ def test_search_papers_shapes_results():
         title="Attention Is All You Need",
         abstract="Transformers replace recurrence.",
         year=2017,
+        publicationDate="2017-06-12",
         authors=[
             SimpleNamespace(name="Ashish Vaswani", authorId="author-1"),
             SimpleNamespace(name="Noam Shazeer", authorId="author-2"),
@@ -100,6 +103,7 @@ def test_search_papers_shapes_results():
         venue="NeurIPS",
         publicationTypes=["JournalArticle"],
         citationCount=12345,
+        externalIds={"DOI": "10.5555/test-doi", "ArXiv": "1706.03762"},
     )
 
     class FakeClient:
@@ -121,6 +125,7 @@ def test_search_papers_shapes_results():
             "title": "Attention Is All You Need",
             "abstract": "Transformers replace recurrence.",
             "year": 2017,
+            "publicationDate": "2017-06-12",
             "authors": [
                 {"name": "Ashish Vaswani", "authorId": "author-1"},
                 {"name": "Noam Shazeer", "authorId": "author-2"},
@@ -129,6 +134,10 @@ def test_search_papers_shapes_results():
             "venue": "NeurIPS",
             "publicationTypes": ["JournalArticle"],
             "citationCount": 12345,
+            "externalIds": {"DOI": "10.5555/test-doi", "ArXiv": "1706.03762"},
+            "doi": "10.5555/test-doi",
+            "pmid": None,
+            "arxivId": "1706.03762",
         }
     ]
 
@@ -139,11 +148,13 @@ def test_search_papers_uses_loaded_items_without_iterating():
         title="Loaded page result",
         abstract=None,
         year=2024,
+        publicationDate=None,
         authors=[],
         url="https://example.com/paper-1",
         venue=None,
         publicationTypes=None,
         citationCount=1,
+        externalIds=None,
     )
 
     class FakePaginatedResults:
@@ -206,11 +217,13 @@ def test_search_papers_retries_rate_limits(monkeypatch):
         title="Recovered after retry",
         abstract=None,
         year=2024,
+        publicationDate=None,
         authors=[],
         url="https://example.com/paper-1",
         venue=None,
         publicationTypes=None,
         citationCount=1,
+        externalIds=None,
     )
 
     class FakeClient:
@@ -250,11 +263,13 @@ def test_search_papers_throttles_each_attempt(monkeypatch):
         title="Recovered after paced retry",
         abstract=None,
         year=2024,
+        publicationDate=None,
         authors=[],
         url="https://example.com/paper-1",
         venue=None,
         publicationTypes=None,
         citationCount=1,
+        externalIds=None,
     )
 
     class FakeClient:
@@ -300,11 +315,13 @@ def test_search_papers_disables_api_key_after_403(monkeypatch):
         title="Recovered without key",
         abstract=None,
         year=2024,
+        publicationDate=None,
         authors=[],
         url="https://example.com/paper-1",
         venue=None,
         publicationTypes=None,
         citationCount=1,
+        externalIds=None,
     )
 
     attempts = {"auth": 0, "anon": 0}
@@ -344,11 +361,13 @@ def test_get_author_papers_shapes_results():
         title="Attention Is All You Need",
         abstract="Transformers replace recurrence.",
         year=2017,
+        publicationDate="2017-06-12",
         authors=[SimpleNamespace(name="Ashish Vaswani", authorId="author-1")],
         url="https://example.com/paper-1",
         venue="NeurIPS",
         publicationTypes=["JournalArticle"],
         citationCount=12345,
+        externalIds=None,
     )
 
     class FakeClient:
@@ -372,8 +391,10 @@ def test_get_recommended_papers_shapes_results():
         paperId="paper-2",
         title="A Recommended Paper",
         year=2024,
+        publicationDate="2024-01-01",
         url="https://example.com/paper-2",
         citationCount=7,
+        externalIds={"PubMed": "12345"},
     )
 
     class FakeClient:
@@ -402,6 +423,7 @@ def test_get_paper_details_delegates_to_client():
         paperId="paper-123",
         title="A Paper",
         year=2024,
+        publicationDate="2024-01-01",
         url="https://example.com/paper-123",
         citationCount=1,
     )
@@ -442,16 +464,30 @@ def test_get_citations_and_references_returns_existing_lists():
         PaperStub(
             paperId="citation-1",
             title="A citing paper",
+            abstract="Citer abstract",
             year=2020,
+            publicationDate="2020-05-01",
             authors=[AuthorStub(name="Citing Author", authorId="author-1")],
+            url="https://example.com/citation-1",
+            venue="TestConf",
+            publicationTypes=["JournalArticle"],
+            citationCount=20,
+            externalIds={"DOI": "10.1000/citation"},
         )
     ]
     references = [
         PaperStub(
             paperId="reference-1",
             title="A referenced paper",
+            abstract="Reference abstract",
             year=2019,
+            publicationDate="2019-04-01",
             authors=[AuthorStub(name="Referenced Author", authorId="author-2")],
+            url="https://example.com/reference-1",
+            venue="RefConf",
+            publicationTypes=["Conference"],
+            citationCount=11,
+            externalIds={"PubMed": "9988"},
         )
     ]
     paper = PaperStub(paperId="paper-1", title="Seed", citations=citations, references=references)
@@ -459,20 +495,235 @@ def test_get_citations_and_references_returns_existing_lists():
     result = search_module.get_citations_and_references(paper)
 
     assert result == {
-        "citations": [
+        "citations": {
+            "total": 1,
+            "offset": 0,
+            "limit": 1,
+            "returned": 1,
+            "hasMore": False,
+            "items": [
+                {
+                    "paperId": "citation-1",
+                    "title": "A citing paper",
+                    "abstract": "Citer abstract",
+                    "year": 2020,
+                    "publicationDate": "2020-05-01",
+                    "authors": [{"name": "Citing Author", "authorId": "author-1"}],
+                    "url": "https://example.com/citation-1",
+                    "venue": "TestConf",
+                    "publicationTypes": ["JournalArticle"],
+                    "citationCount": 20,
+                    "externalIds": {"DOI": "10.1000/citation"},
+                    "doi": "10.1000/citation",
+                    "pmid": None,
+                    "arxivId": None,
+                    "contexts": None,
+                    "intents": None,
+                    "isInfluential": None,
+                }
+            ],
+        },
+        "references": {
+            "total": 1,
+            "offset": 0,
+            "limit": 1,
+            "returned": 1,
+            "hasMore": False,
+            "items": [
+                {
+                    "paperId": "reference-1",
+                    "title": "A referenced paper",
+                    "abstract": "Reference abstract",
+                    "year": 2019,
+                    "publicationDate": "2019-04-01",
+                    "authors": [{"name": "Referenced Author", "authorId": "author-2"}],
+                    "url": "https://example.com/reference-1",
+                    "venue": "RefConf",
+                    "publicationTypes": ["Conference"],
+                    "citationCount": 11,
+                    "externalIds": {"PubMed": "9988"},
+                    "doi": None,
+                    "pmid": "9988",
+                    "arxivId": None,
+                    "contexts": None,
+                    "intents": None,
+                    "isInfluential": None,
+                }
+            ],
+        },
+    }
+
+
+def test_get_citations_page_formats_rich_paginated_response():
+    class FakeClient:
+        def get_paper_citations_page(self, paper_id, limit=100, offset=0):
+            assert (paper_id, limit, offset) == ("paper-1", 2, 5)
+            return {
+                "total": 838,
+                "data": [
+                    {
+                        "contexts": ["important context"],
+                        "intents": ["Background"],
+                        "isInfluential": True,
+                        "citingPaper": {
+                            "paperId": "citation-1",
+                            "title": "A citing paper",
+                            "abstract": "Citer abstract",
+                            "year": 2020,
+                            "publicationDate": "2020-05-01",
+                            "authors": [{"name": "Citing Author", "authorId": "author-1"}],
+                            "url": "https://example.com/citation-1",
+                            "venue": "TestConf",
+                            "publicationTypes": ["JournalArticle"],
+                            "citationCount": 20,
+                            "externalIds": {"DOI": "10.1000/citation"},
+                        },
+                    }
+                ],
+            }
+
+    result = search_module.get_citations_page(FakeClient(), "paper-1", 2, 5)
+
+    assert result == {
+        "total": 838,
+        "offset": 5,
+        "limit": 2,
+        "returned": 1,
+        "hasMore": True,
+        "items": [
             {
                 "paperId": "citation-1",
                 "title": "A citing paper",
+                "abstract": "Citer abstract",
                 "year": 2020,
+                "publicationDate": "2020-05-01",
                 "authors": [{"name": "Citing Author", "authorId": "author-1"}],
-            }
-        ],
-        "references": [
-            {
-                "paperId": "reference-1",
-                "title": "A referenced paper",
-                "year": 2019,
-                "authors": [{"name": "Referenced Author", "authorId": "author-2"}],
+                "url": "https://example.com/citation-1",
+                "venue": "TestConf",
+                "publicationTypes": ["JournalArticle"],
+                "citationCount": 20,
+                "externalIds": {"DOI": "10.1000/citation"},
+                "doi": "10.1000/citation",
+                "pmid": None,
+                "arxivId": None,
+                "contexts": ["important context"],
+                "intents": ["Background"],
+                "isInfluential": True,
             }
         ],
     }
+
+
+def test_get_references_page_formats_rich_paginated_response():
+    class FakeClient:
+        def get_paper_references_page(self, paper_id, limit=100, offset=0):
+            assert (paper_id, limit, offset) == ("paper-1", 2, 0)
+            return {
+                "total": 12,
+                "data": [
+                    {
+                        "contexts": None,
+                        "intents": None,
+                        "isInfluential": False,
+                        "citedPaper": {
+                            "paperId": "reference-1",
+                            "title": "A referenced paper",
+                            "abstract": "Reference abstract",
+                            "year": 2019,
+                            "publicationDate": "2019-04-01",
+                            "authors": [{"name": "Referenced Author", "authorId": "author-2"}],
+                            "url": "https://example.com/reference-1",
+                            "venue": "RefConf",
+                            "publicationTypes": ["Conference"],
+                            "citationCount": 11,
+                            "externalIds": {"PubMed": "9988"},
+                        },
+                    }
+                ],
+            }
+
+    result = search_module.get_references_page(FakeClient(), "paper-1", 2, 0)
+
+    assert result["hasMore"] is True
+    assert result["items"][0]["pmid"] == "9988"
+
+
+def test_get_citations_and_references_page_pair_combines_pages(monkeypatch):
+    citations_page = {
+        "total": 10,
+        "offset": 0,
+        "limit": 2,
+        "returned": 2,
+        "hasMore": True,
+        "items": [{"paperId": "citation-1", "title": "Citation"}],
+    }
+    references_page = {
+        "total": 4,
+        "offset": 2,
+        "limit": 2,
+        "returned": 2,
+        "hasMore": False,
+        "items": [{"paperId": "reference-1", "title": "Reference"}],
+    }
+
+    monkeypatch.setattr(search_module, "get_citations_page", lambda client, paper_id, limit, offset: citations_page)
+    monkeypatch.setattr(search_module, "get_references_page", lambda client, paper_id, limit, offset: references_page)
+
+    class FakeClient:
+        def get_paper_citations_page(self, paper_id, limit=100, offset=0):
+            raise AssertionError("should not be called directly")
+
+        def get_paper_references_page(self, paper_id, limit=100, offset=0):
+            raise AssertionError("should not be called directly")
+
+    result = search_module.get_citations_and_references_page_pair(
+        FakeClient(),
+        "paper-1",
+        citations_limit=2,
+        citations_offset=0,
+        references_limit=2,
+        references_offset=2,
+    )
+
+    assert result == {
+        "citations": citations_page,
+        "references": references_page,
+    }
+
+
+def test_get_papers_batch_shapes_results():
+    paper = PaperStub(
+        paperId="paper-2",
+        title="Batch Paper",
+        year=2024,
+        publicationDate="2024-01-01",
+        externalIds={"ArXiv": "1234.5678"},
+    )
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def get_papers(self, paper_ids):
+            self.calls.append(paper_ids)
+            return [paper]
+
+    client = FakeClient()
+
+    results = search_module.get_papers_batch(client, ["paper-2"])
+
+    assert client.calls == [["paper-2"]]
+    assert results[0]["arxivId"] == "1234.5678"
+
+
+def test_get_citations_page_validates_arguments():
+    class FakeClient:
+        def get_paper_citations_page(self, paper_id, limit=100, offset=0):
+            raise AssertionError("should not be called")
+
+    try:
+        search_module.get_citations_page(FakeClient(), "paper-1", 0, 0)
+    except ValueError as exc:
+        assert "limit" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

@@ -11,10 +11,11 @@ The goal of this fork is to keep the original idea while improving packaging, re
 
 - 🔍 Search for papers on Semantic Scholar
 - 📄 Retrieve detailed information about specific papers
+- 🗂️ Fetch multiple papers in a batch
 - 👤 Get author details
 - 👥 Search for authors and list their papers
 - 💡 Get recommended papers for a seed paper
-- 🔗 Fetch citations and references for a paper
+- 🔗 Fetch paginated citations and references with rich metadata
 
 ## 📋 Prerequisites
 
@@ -62,14 +63,19 @@ The goal of this fork is to keep the original idea while improving packaging, re
 
    - 🔍 `search_semantic_scholar`: Search for papers using a query string
    - 📄 `get_semantic_scholar_paper_details`: Get details of a specific paper
+   - 🗂️ `get_semantic_scholar_papers_batch`: Get details for multiple papers in one request
    - 👤 `get_semantic_scholar_author_details`: Get details of a specific author
    - 👥 `search_semantic_scholar_authors`: Search for authors by name
    - 📚 `get_semantic_scholar_author_papers`: Get papers for a specific author
    - 💡 `get_semantic_scholar_recommendations`: Get recommended papers for a seed paper
-   - 🔗 `get_semantic_scholar_citations_and_references`: Get citations and references for a paper
+   - 🔗 `get_semantic_scholar_citations`: Get a paginated page of citations for a paper
+   - 🔗 `get_semantic_scholar_references`: Get a paginated page of references for a paper
+   - 🔗 `get_semantic_scholar_citations_and_references`: Get bounded pages of both citations and references for a paper
 
 This repository uses the `semanticscholar_mcp_server` Python package as its only entrypoint.
 If `SEMANTIC_SCHOLAR_API_KEY` is configured, the server will try authenticated requests first. If Semantic Scholar responds with `403 Forbidden`, the server automatically disables key usage for the rest of the process and falls back to the public API. All Semantic Scholar requests are client-side throttled to at most 1 request per second, and public API requests also use tenacity-based exponential backoff retries for transient `429` rate limits.
+
+Large citation and reference sets are exposed through paginated tools so large papers stay usable in MCP clients. Related-paper responses include richer fields such as abstract, venue, citation count, publication types, URLs, and external ids when available.
 
 ### Behavior Knobs
 

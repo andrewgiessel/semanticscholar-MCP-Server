@@ -10,17 +10,21 @@ from semanticscholar_mcp_server.models import (
     AuthorListResult,
     PaperDetailResult,
     PaperListResult,
+    RelatedPageResult,
     RelatedResult,
     ToolError,
 )
 from semanticscholar_mcp_server.search import (
+    get_citations_and_references_page_pair,
+    get_citations_page,
     format_author,
     format_paper,
     get_author_details,
     get_author_papers,
-    get_citations_and_references,
     get_paper_details,
+    get_papers_batch,
     get_recommended_papers,
+    get_references_page,
     initialize_client,
     search_authors,
     search_papers,
@@ -136,21 +140,78 @@ async def get_semantic_scholar_author_papers(author_id: str, num_results: int = 
 @mcp.tool()
 async def get_semantic_scholar_citations_and_references(
     paper_id: str,
+    citations_limit: int = 100,
+    citations_offset: int = 0,
+    references_limit: int = 100,
+    references_offset: int = 0,
 ) -> RelatedResult:
-    """Get both citing papers and referenced papers for a seed paper.
+    """Get bounded pages of citing papers and referenced papers for a seed paper.
 
     Args:
         paper_id: Semantic Scholar paper id, DOI, ArXiv id, or another supported paper identifier.
+        citations_limit: Maximum number of citations to return in this page.
+        citations_offset: Citation offset for pagination.
+        references_limit: Maximum number of references to return in this page.
+        references_offset: Reference offset for pagination.
 
     Returns:
-        An object with `citations` and `references` lists, each containing related paper summaries.
+        An object with paginated `citations` and `references` sections, each including richer related-paper metadata.
     """
     logging.info("Fetching citations and references for paper ID: %s", paper_id)
     try:
-        paper = await asyncio.to_thread(get_paper_details, client, paper_id)
-        return await asyncio.to_thread(get_citations_and_references, paper)
+        return await asyncio.to_thread(
+            get_citations_and_references_page_pair,
+            client,
+            paper_id,
+            citations_limit=citations_limit,
+            citations_offset=citations_offset,
+            references_limit=references_limit,
+            references_offset=references_offset,
+        )
     except Exception as exc:
         return tool_error("An error occurred while fetching citations and references", exc)
+
+
+@mcp.tool()
+async def get_semantic_scholar_citations(
+    paper_id: str, limit: int = 100, offset: int = 0
+) -> RelatedPageResult:
+    """Get a paginated page of citing papers with rich metadata.
+
+    Args:
+        paper_id: Semantic Scholar paper id, DOI, ArXiv id, or another supported paper identifier.
+        limit: Maximum number of citing papers to return in this page.
+        offset: Starting offset for pagination.
+
+    Returns:
+        A page of citations with total count, paging metadata, and richer paper fields.
+    """
+    logging.info("Fetching citations page for paper ID: %s, limit: %s, offset: %s", paper_id, limit, offset)
+    try:
+        return await asyncio.to_thread(get_citations_page, client, paper_id, limit, offset)
+    except Exception as exc:
+        return tool_error("An error occurred while fetching citations", exc)
+
+
+@mcp.tool()
+async def get_semantic_scholar_references(
+    paper_id: str, limit: int = 100, offset: int = 0
+) -> RelatedPageResult:
+    """Get a paginated page of referenced papers with rich metadata.
+
+    Args:
+        paper_id: Semantic Scholar paper id, DOI, ArXiv id, or another supported paper identifier.
+        limit: Maximum number of referenced papers to return in this page.
+        offset: Starting offset for pagination.
+
+    Returns:
+        A page of references with total count, paging metadata, and richer paper fields.
+    """
+    logging.info("Fetching references page for paper ID: %s, limit: %s, offset: %s", paper_id, limit, offset)
+    try:
+        return await asyncio.to_thread(get_references_page, client, paper_id, limit, offset)
+    except Exception as exc:
+        return tool_error("An error occurred while fetching references", exc)
 
 
 @mcp.tool()
@@ -181,6 +242,23 @@ async def get_semantic_scholar_recommendations(
         )
     except Exception as exc:
         return [tool_error("An error occurred while fetching recommendations", exc)]
+
+
+@mcp.tool()
+async def get_semantic_scholar_papers_batch(paper_ids: list[str]) -> PaperListResult:
+    """Fetch detailed metadata for multiple Semantic Scholar papers in one request.
+
+    Args:
+        paper_ids: List of Semantic Scholar paper ids or other supported paper identifiers.
+
+    Returns:
+        A list of paper records with the same summary fields used by paper search and recommendations.
+    """
+    logging.info("Fetching batch paper details for %s paper ids", len(paper_ids))
+    try:
+        return await asyncio.to_thread(get_papers_batch, client, paper_ids)
+    except Exception as exc:
+        return [tool_error("An error occurred while fetching papers in batch", exc)]
 
 
 def main() -> None:
