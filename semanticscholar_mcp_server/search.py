@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, cast
 
@@ -144,7 +145,7 @@ class PaperLike(Protocol):
     def year(self) -> int | None: ...
 
     @property
-    def publicationDate(self) -> str | None: ...
+    def publicationDate(self) -> object | None: ...
 
     @property
     def authors(self) -> Sequence[AuthorLike]: ...
@@ -373,6 +374,16 @@ def format_author_brief(author: AuthorLike) -> PaperAuthor:
     }
 
 
+def _normalize_publication_date(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
 def format_paper(paper: PaperLike) -> PaperSummary:
     external_ids = _normalize_external_ids(getattr(paper, "externalIds", None))
     return {
@@ -380,7 +391,7 @@ def format_paper(paper: PaperLike) -> PaperSummary:
         "title": paper.title,
         "abstract": paper.abstract,
         "year": paper.year,
-        "publicationDate": paper.publicationDate,
+        "publicationDate": _normalize_publication_date(paper.publicationDate),
         "authors": [format_author_brief(author) for author in paper.authors],
         "url": paper.url,
         "venue": paper.venue,
@@ -400,7 +411,7 @@ def format_related_paper(paper: PaperLike) -> RelatedPaperSummary:
         "title": paper.title,
         "abstract": paper.abstract,
         "year": paper.year,
-        "publicationDate": paper.publicationDate,
+        "publicationDate": _normalize_publication_date(paper.publicationDate),
         "authors": [format_author_brief(author) for author in paper.authors],
         "url": paper.url,
         "venue": paper.venue,
@@ -456,7 +467,7 @@ def format_reference_record(reference: dict[str, object], paper_key: str) -> Rel
         "title": cast(str | None, paper.get("title")),
         "abstract": cast(str | None, paper.get("abstract")),
         "year": cast(int | None, paper.get("year")),
-        "publicationDate": cast(str | None, paper.get("publicationDate")),
+        "publicationDate": _normalize_publication_date(paper.get("publicationDate")),
         "authors": [
             {
                 "name": cast(str | None, author.get("name")),

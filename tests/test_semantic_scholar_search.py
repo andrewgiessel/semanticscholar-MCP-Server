@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Literal
 
@@ -26,7 +27,7 @@ class PaperStub:
     title: str | None
     abstract: str | None = None
     year: int | None = None
-    publicationDate: str | None = None
+    publicationDate: object | None = None
     authors: list[AuthorStub] = field(default_factory=list)
     url: str | None = None
     venue: str | None = None
@@ -140,6 +141,18 @@ def test_search_papers_shapes_results():
             "arxivId": "1706.03762",
         }
     ]
+
+
+def test_format_paper_normalizes_datetime_publication_date():
+    paper = PaperStub(
+        paperId="paper-1",
+        title="Datetime Paper",
+        publicationDate=datetime(2024, 3, 15, 12, 30, 0),
+    )
+
+    result = search_module.format_paper(paper)
+
+    assert result["publicationDate"] == "2024-03-15"
 
 
 def test_search_papers_uses_loaded_items_without_iterating():
