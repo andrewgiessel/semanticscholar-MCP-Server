@@ -1,9 +1,18 @@
 import asyncio
 import logging
-from typing import Any, Dict, List
+import os
+from typing import Literal, cast
 
 from mcp.server.fastmcp import FastMCP
 
+from semanticscholar_mcp_server.models import (
+    AuthorDetailResult,
+    AuthorListResult,
+    PaperDetailResult,
+    PaperListResult,
+    RelatedResult,
+    ToolError,
+)
 from semanticscholar_mcp_server.search import (
     format_author,
     format_paper,
@@ -18,16 +27,24 @@ from semanticscholar_mcp_server.search import (
 )
 
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+def configure_logging() -> None:
+    level_name = os.getenv("SEMANTIC_SCHOLAR_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+
+def tool_error(prefix: str, exc: Exception) -> ToolError:
+    return {"error": f"{prefix}: {exc}"}
+
+
+configure_logging()
 
 mcp = FastMCP("semanticscholar")
 client = initialize_client()
 
 
 @mcp.tool()
-async def search_semantic_scholar(
-    query: str, num_results: int = 10
-) -> List[Dict[str, Any]]:
+async def search_semantic_scholar(query: str, num_results: int = 10) -> PaperListResult:
     """Search Semantic Scholar papers by keyword, phrase, or topic.
 
     Args:
@@ -41,11 +58,11 @@ async def search_semantic_scholar(
     try:
         return await asyncio.to_thread(search_papers, client, query, num_results)
     except Exception as exc:
-        return [{"error": f"An error occurred while searching: {exc}"}]
+        return [tool_error("An error occurred while searching", exc)]
 
 
 @mcp.tool()
-async def get_semantic_scholar_paper_details(paper_id: str) -> Dict[str, Any]:
+async def get_semantic_scholar_paper_details(paper_id: str) -> PaperDetailResult:
     """Fetch detailed metadata for a single Semantic Scholar paper.
 
     Args:
@@ -59,11 +76,11 @@ async def get_semantic_scholar_paper_details(paper_id: str) -> Dict[str, Any]:
         paper = await asyncio.to_thread(get_paper_details, client, paper_id)
         return format_paper(paper)
     except Exception as exc:
-        return {"error": f"An error occurred while fetching paper details: {exc}"}
+        return tool_error("An error occurred while fetching paper details", exc)
 
 
 @mcp.tool()
-async def get_semantic_scholar_author_details(author_id: str) -> Dict[str, Any]:
+async def get_semantic_scholar_author_details(author_id: str) -> AuthorDetailResult:
     """Fetch detailed metadata for a single Semantic Scholar author.
 
     Args:
@@ -77,13 +94,11 @@ async def get_semantic_scholar_author_details(author_id: str) -> Dict[str, Any]:
         author = await asyncio.to_thread(get_author_details, client, author_id)
         return format_author(author)
     except Exception as exc:
-        return {"error": f"An error occurred while fetching author details: {exc}"}
+        return tool_error("An error occurred while fetching author details", exc)
 
 
 @mcp.tool()
-async def search_semantic_scholar_authors(
-    query: str, num_results: int = 10
-) -> List[Dict[str, Any]]:
+async def search_semantic_scholar_authors(query: str, num_results: int = 10) -> AuthorListResult:
     """Search Semantic Scholar authors by name.
 
     Args:
@@ -97,13 +112,11 @@ async def search_semantic_scholar_authors(
     try:
         return await asyncio.to_thread(search_authors, client, query, num_results)
     except Exception as exc:
-        return [{"error": f"An error occurred while searching authors: {exc}"}]
+        return [tool_error("An error occurred while searching authors", exc)]
 
 
 @mcp.tool()
-async def get_semantic_scholar_author_papers(
-    author_id: str, num_results: int = 10
-) -> List[Dict[str, Any]]:
+async def get_semantic_scholar_author_papers(author_id: str, num_results: int = 10) -> PaperListResult:
     """List papers written by a specific Semantic Scholar author.
 
     Args:
@@ -117,13 +130,13 @@ async def get_semantic_scholar_author_papers(
     try:
         return await asyncio.to_thread(get_author_papers, client, author_id, num_results)
     except Exception as exc:
-        return [{"error": f"An error occurred while fetching author papers: {exc}"}]
+        return [tool_error("An error occurred while fetching author papers", exc)]
 
 
 @mcp.tool()
 async def get_semantic_scholar_citations_and_references(
     paper_id: str,
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> RelatedResult:
     """Get both citing papers and referenced papers for a seed paper.
 
     Args:
@@ -135,41 +148,15 @@ async def get_semantic_scholar_citations_and_references(
     logging.info("Fetching citations and references for paper ID: %s", paper_id)
     try:
         paper = await asyncio.to_thread(get_paper_details, client, paper_id)
-        citations_refs = await asyncio.to_thread(get_citations_and_references, paper)
-        return {
-            "citations": [
-                {
-                    "paperId": citation.paperId,
-                    "title": citation.title,
-                    "year": citation.year,
-                    "authors": [
-                        {"name": author.name, "authorId": author.authorId}
-                        for author in citation.authors
-                    ],
-                }
-                for citation in citations_refs["citations"]
-            ],
-            "references": [
-                {
-                    "paperId": reference.paperId,
-                    "title": reference.title,
-                    "year": reference.year,
-                    "authors": [
-                        {"name": author.name, "authorId": author.authorId}
-                        for author in reference.authors
-                    ],
-                }
-                for reference in citations_refs["references"]
-            ],
-        }
+        return await asyncio.to_thread(get_citations_and_references, paper)
     except Exception as exc:
-        return {"error": f"An error occurred while fetching citations and references: {exc}"}
+        return tool_error("An error occurred while fetching citations and references", exc)
 
 
 @mcp.tool()
 async def get_semantic_scholar_recommendations(
     paper_id: str, num_results: int = 10, pool_from: str = "recent"
-) -> List[Dict[str, Any]]:
+) -> PaperListResult:
     """Recommend papers related to a seed paper.
 
     Args:
@@ -187,11 +174,13 @@ async def get_semantic_scholar_recommendations(
         pool_from,
     )
     try:
+        if pool_from not in {"recent", "all-cs"}:
+            return [tool_error("Invalid recommendation pool", ValueError("pool_from must be 'recent' or 'all-cs'"))]
         return await asyncio.to_thread(
-            get_recommended_papers, client, paper_id, num_results, pool_from
+            get_recommended_papers, client, paper_id, num_results, cast(Literal["recent", "all-cs"], pool_from)
         )
     except Exception as exc:
-        return [{"error": f"An error occurred while fetching recommendations: {exc}"}]
+        return [tool_error("An error occurred while fetching recommendations", exc)]
 
 
 def main() -> None:

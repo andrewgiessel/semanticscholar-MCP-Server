@@ -1,8 +1,38 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Literal
 
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_fixed
 
 from semanticscholar_mcp_server import search as search_module
+
+
+@dataclass
+class AuthorStub:
+    authorId: str | None
+    name: str | None
+    url: str | None = None
+    affiliations: list[str] | None = None
+    paperCount: int | None = None
+    citationCount: int | None = None
+    hIndex: int | None = None
+
+
+@dataclass
+class PaperStub:
+    paperId: str | None
+    title: str | None
+    abstract: str | None = None
+    year: int | None = None
+    authors: list[AuthorStub] = field(default_factory=list)
+    url: str | None = None
+    venue: str | None = None
+    publicationTypes: list[str] | None = None
+    citationCount: int | None = None
+    citations: list[PaperStub] = field(default_factory=list)
+    references: list[PaperStub] = field(default_factory=list)
 
 
 def test_initialize_client_uses_api_key_when_present(monkeypatch):
@@ -338,15 +368,11 @@ def test_get_author_papers_shapes_results():
 
 
 def test_get_recommended_papers_shapes_results():
-    paper = SimpleNamespace(
+    paper = PaperStub(
         paperId="paper-2",
         title="A Recommended Paper",
-        abstract=None,
         year=2024,
-        authors=[],
         url="https://example.com/paper-2",
-        venue=None,
-        publicationTypes=None,
         citationCount=7,
     )
 
@@ -354,7 +380,12 @@ def test_get_recommended_papers_shapes_results():
         def __init__(self):
             self.calls = []
 
-        def get_recommended_papers(self, paper_id, limit=10, pool_from="recent"):
+        def get_recommended_papers(
+            self,
+            paper_id: str,
+            limit: int = 10,
+            pool_from: Literal["recent", "all-cs"] = "recent",
+        ) -> list[PaperStub]:
             self.calls.append((paper_id, limit, pool_from))
             return [paper]
 
@@ -367,10 +398,16 @@ def test_get_recommended_papers_shapes_results():
 
 
 def test_get_paper_details_delegates_to_client():
-    expected_paper = object()
+    expected_paper = PaperStub(
+        paperId="paper-123",
+        title="A Paper",
+        year=2024,
+        url="https://example.com/paper-123",
+        citationCount=1,
+    )
 
     class FakeClient:
-        def get_paper(self, paper_id):
+        def get_paper(self, paper_id: str) -> PaperStub:
             assert paper_id == "paper-123"
             return expected_paper
 
@@ -380,10 +417,18 @@ def test_get_paper_details_delegates_to_client():
 
 
 def test_get_author_details_delegates_to_client():
-    expected_author = object()
+    expected_author = AuthorStub(
+        authorId="author-123",
+        name="An Author",
+        url="https://example.com/author-123",
+        affiliations=[],
+        paperCount=1,
+        citationCount=1,
+        hIndex=1,
+    )
 
     class FakeClient:
-        def get_author(self, author_id):
+        def get_author(self, author_id: str) -> AuthorStub:
             assert author_id == "author-123"
             return expected_author
 
@@ -393,13 +438,41 @@ def test_get_author_details_delegates_to_client():
 
 
 def test_get_citations_and_references_returns_existing_lists():
-    citations = [SimpleNamespace(paperId="citation-1")]
-    references = [SimpleNamespace(paperId="reference-1")]
-    paper = SimpleNamespace(citations=citations, references=references)
+    citations = [
+        PaperStub(
+            paperId="citation-1",
+            title="A citing paper",
+            year=2020,
+            authors=[AuthorStub(name="Citing Author", authorId="author-1")],
+        )
+    ]
+    references = [
+        PaperStub(
+            paperId="reference-1",
+            title="A referenced paper",
+            year=2019,
+            authors=[AuthorStub(name="Referenced Author", authorId="author-2")],
+        )
+    ]
+    paper = PaperStub(paperId="paper-1", title="Seed", citations=citations, references=references)
 
     result = search_module.get_citations_and_references(paper)
 
     assert result == {
-        "citations": citations,
-        "references": references,
+        "citations": [
+            {
+                "paperId": "citation-1",
+                "title": "A citing paper",
+                "year": 2020,
+                "authors": [{"name": "Citing Author", "authorId": "author-1"}],
+            }
+        ],
+        "references": [
+            {
+                "paperId": "reference-1",
+                "title": "A referenced paper",
+                "year": 2019,
+                "authors": [{"name": "Referenced Author", "authorId": "author-2"}],
+            }
+        ],
     }
