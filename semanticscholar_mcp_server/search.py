@@ -2,8 +2,9 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
-from datetime import date, datetime
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import date, datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, cast
 
@@ -19,12 +20,23 @@ from tenacity import (
 )
 
 from semanticscholar_mcp_server.models import (
+    AutocompleteSuggestion,
     AuthorSummary,
+    BibtexExport,
+    BulkPaperSearchPage,
     CitationsAndReferences,
+    FlexiblePaperSummary,
+    HealthStatus,
     PaperAuthor,
+    PaperSearchPage,
     PaperSummary,
     RelatedPaperPage,
     RelatedPaperSummary,
+    RequestConfig,
+    RetryConfig,
+    SnippetPaperSummary,
+    SnippetResultItem,
+    SnippetSearchResult,
 )
 
 
@@ -33,6 +45,38 @@ load_dotenv(PROJECT_ROOT / ".env")
 logger = logging.getLogger(__name__)
 ResultT = TypeVar("ResultT")
 ItemT = TypeVar("ItemT", covariant=True)
+
+DEFAULT_PAPER_FIELDS = [
+    "title",
+    "abstract",
+    "authors",
+    "citationCount",
+    "externalIds",
+    "publicationDate",
+    "publicationTypes",
+    "url",
+    "venue",
+    "year",
+]
+DEFAULT_ADVANCED_PAPER_FIELDS = DEFAULT_PAPER_FIELDS + ["isOpenAccess", "openAccessPdf", "fieldsOfStudy"]
+DEFAULT_BULK_PAPER_FIELDS = DEFAULT_ADVANCED_PAPER_FIELDS
+BIBTEX_FIELDS = ["title", "citationStyles"]
+RELATED_PAPER_FIELDS = [
+    "paperId",
+    "title",
+    "abstract",
+    "authors",
+    "citationCount",
+    "externalIds",
+    "publicationDate",
+    "publicationTypes",
+    "url",
+    "venue",
+    "year",
+]
+REFERENCE_METADATA_FIELDS = ["contexts", "intents", "isInfluential"]
+VALID_RECOMMENDATION_POOLS = {"recent", "all-cs"}
+VALID_BULK_SORT_FIELDS = {"paperId", "publicationDate", "citationCount"}
 
 
 def _env_float(name: str, default: float) -> float:
@@ -63,19 +107,6 @@ RETRY_MIN_WAIT_SECONDS = _env_float("SEMANTIC_SCHOLAR_RETRY_MIN_WAIT_SECONDS", 1
 RETRY_MAX_WAIT_SECONDS = _env_float("SEMANTIC_SCHOLAR_RETRY_MAX_WAIT_SECONDS", 30.0)
 REQUEST_TIMEOUT_SECONDS = _env_float("SEMANTIC_SCHOLAR_REQUEST_TIMEOUT_SECONDS", 30.0)
 API_BASE_URL = "https://api.semanticscholar.org"
-RELATED_PAPER_FIELDS = [
-    "paperId",
-    "title",
-    "abstract",
-    "authors",
-    "citationCount",
-    "externalIds",
-    "publicationTypes",
-    "url",
-    "venue",
-    "year",
-]
-REFERENCE_METADATA_FIELDS = ["contexts", "intents", "isInfluential"]
 
 
 def _is_rate_limited(exc: BaseException) -> bool:
@@ -172,6 +203,25 @@ class PaperLike(Protocol):
     def references(self) -> Sequence["PaperLike"]: ...
 
 
+class JsonRequestClient(Protocol):
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str | int | float] | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> object: ...
+
+
+class StatusClient(JsonRequestClient, Protocol):
+    @property
+    def api_key_configured(self) -> bool: ...
+
+    @property
+    def using_api_key(self) -> bool: ...
+
+
 class PaperSearchClient(Protocol):
     def search_paper(self, query: str, limit: int = 10) -> object: ...
 
@@ -242,6 +292,14 @@ class SemanticScholarClient:
         self._throttle: ThrottleLike = RequestThrottle(MIN_SECONDS_BETWEEN_REQUESTS)
         self._client = self._build_client(api_key=self._api_key)
 
+    @property
+    def api_key_configured(self) -> bool:
+        return bool(self._api_key)
+
+    @property
+    def using_api_key(self) -> bool:
+        return self._using_api_key
+
     def _build_client(self, api_key: str | None = None) -> SemanticScholar:
         if api_key is None:
             return SemanticScholar(retry=False)
@@ -257,26 +315,26 @@ class SemanticScholarClient:
         path: str,
         *,
         params: dict[str, str | int | float] | None = None,
-    ) -> dict[str, object]:
-        def call_once() -> dict[str, object]:
+        json_body: dict[str, object] | None = None,
+    ) -> object:
+        def call_once() -> object:
             self._throttle.wait_for_turn()
             headers = {"x-api-key": self._api_key} if self._using_api_key and self._api_key else None
             response = requests.request(
                 method=method,
                 url=f"{API_BASE_URL}{path}",
                 params=params,
+                json=json_body,
                 headers=headers,
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
             if response.status_code == 200:
-                return cast(dict[str, object], response.json())
+                return cast(object, response.json())
             if response.status_code == 403:
                 raise PermissionError("HTTP status 403 Forbidden.")
             if response.status_code == 429:
                 raise ConnectionRefusedError("HTTP status 429 Too Many Requests.")
-            raise RuntimeError(
-                f"HTTP status {response.status_code}: {response.text[:300].replace(chr(10), ' ')}"
-            )
+            raise RuntimeError(f"HTTP status {response.status_code}: {response.text[:300].replace(chr(10), ' ')}")
 
         try:
             return _call_with_rate_limit_retry(call_once)
@@ -289,6 +347,16 @@ class SemanticScholarClient:
                 self._disable_api_key()
                 return _call_with_rate_limit_retry(call_once)
             raise
+
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str | int | float] | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> object:
+        return self._request_json(method, path, params=params, json_body=json_body)
 
     def _call(self, method_name: str, *args: object, **kwargs: object) -> object:
         def call_once() -> object:
@@ -335,29 +403,35 @@ class SemanticScholarClient:
         return cast(Sequence[PaperLike], self._call("get_papers", paper_ids))
 
     def get_paper_citations_page(self, paper_id: str, limit: int = 100, offset: int = 0) -> dict[str, object]:
-        return self._request_json(
-            "GET",
-            f"/graph/v1/paper/{paper_id}/citations",
-            params={
-                "fields": ",".join(
-                    REFERENCE_METADATA_FIELDS + [f"citingPaper.{field}" for field in RELATED_PAPER_FIELDS]
-                ),
-                "limit": limit,
-                "offset": offset,
-            },
+        return cast(
+            dict[str, object],
+            self._request_json(
+                "GET",
+                f"/graph/v1/paper/{paper_id}/citations",
+                params={
+                    "fields": ",".join(
+                        REFERENCE_METADATA_FIELDS + [f"citingPaper.{field}" for field in RELATED_PAPER_FIELDS]
+                    ),
+                    "limit": limit,
+                    "offset": offset,
+                },
+            ),
         )
 
     def get_paper_references_page(self, paper_id: str, limit: int = 100, offset: int = 0) -> dict[str, object]:
-        return self._request_json(
-            "GET",
-            f"/graph/v1/paper/{paper_id}/references",
-            params={
-                "fields": ",".join(
-                    REFERENCE_METADATA_FIELDS + [f"citedPaper.{field}" for field in RELATED_PAPER_FIELDS]
-                ),
-                "limit": limit,
-                "offset": offset,
-            },
+        return cast(
+            dict[str, object],
+            self._request_json(
+                "GET",
+                f"/graph/v1/paper/{paper_id}/references",
+                params={
+                    "fields": ",".join(
+                        REFERENCE_METADATA_FIELDS + [f"citedPaper.{field}" for field in RELATED_PAPER_FIELDS]
+                    ),
+                    "limit": limit,
+                    "offset": offset,
+                },
+            ),
         )
 
 
@@ -365,6 +439,13 @@ def initialize_client() -> SemanticScholarClient:
     """Initialize a client that can fall back to public access on 403."""
     api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
     return SemanticScholarClient(api_key=api_key)
+
+
+def _package_version() -> str:
+    try:
+        return version("semanticscholar-mcp-server")
+    except PackageNotFoundError:
+        return "0.1.0"
 
 
 def format_author_brief(author: AuthorLike) -> PaperAuthor:
@@ -382,6 +463,106 @@ def _normalize_publication_date(value: object) -> str | None:
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
+
+
+def _normalize_external_ids(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = {str(key): str(raw_value) for key, raw_value in value.items() if raw_value is not None}
+    return normalized or None
+
+
+def _normalize_citation_styles(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = {str(key): str(raw_value) for key, raw_value in value.items() if raw_value is not None}
+    return normalized or None
+
+
+def _extract_external_id(external_ids: dict[str, str] | None, *candidate_keys: str) -> str | None:
+    if external_ids is None:
+        return None
+    lowered = {key.lower(): value for key, value in external_ids.items()}
+    for key in candidate_keys:
+        value = lowered.get(key.lower())
+        if value:
+            return value
+    return None
+
+
+def _normalize_string_list(value: object) -> list[str] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    normalized = [str(item) for item in value if item is not None]
+    return normalized or None
+
+
+def _format_author_briefs_from_mapping(authors: object) -> list[PaperAuthor]:
+    if not isinstance(authors, Sequence) or isinstance(authors, (str, bytes)):
+        return []
+    items: list[PaperAuthor] = []
+    for author in authors:
+        if not isinstance(author, Mapping):
+            continue
+        items.append(
+            {
+                "name": cast(str | None, author.get("name")),
+                "authorId": cast(str | None, author.get("authorId")),
+            }
+        )
+    return items
+
+
+def _normalize_fields_of_study(record: Mapping[str, object]) -> list[str] | None:
+    direct = _normalize_string_list(record.get("fieldsOfStudy"))
+    if direct is not None:
+        return direct
+    s2_fields = record.get("s2FieldsOfStudy")
+    if not isinstance(s2_fields, Sequence) or isinstance(s2_fields, (str, bytes)):
+        return None
+    normalized = []
+    for item in s2_fields:
+        if isinstance(item, Mapping):
+            category = item.get("category")
+            if category is not None:
+                normalized.append(str(category))
+    return normalized or None
+
+
+def _extract_open_access_pdf_url(record: Mapping[str, object]) -> str | None:
+    open_access_pdf = record.get("openAccessPdf")
+    if isinstance(open_access_pdf, Mapping):
+        url = open_access_pdf.get("url")
+        if url is not None:
+            return str(url)
+    open_access_info = record.get("openAccessInfo")
+    if isinstance(open_access_info, Mapping):
+        nested_pdf = open_access_info.get("openAccessPdf")
+        if isinstance(nested_pdf, Mapping):
+            url = nested_pdf.get("url")
+            if url is not None:
+                return str(url)
+    return None
+
+
+def _format_paper_summary_from_mapping(record: Mapping[str, object]) -> PaperSummary:
+    external_ids = _normalize_external_ids(record.get("externalIds"))
+    return {
+        "paperId": cast(str | None, record.get("paperId")),
+        "title": cast(str | None, record.get("title")),
+        "abstract": cast(str | None, record.get("abstract")),
+        "year": cast(int | None, record.get("year")),
+        "publicationDate": _normalize_publication_date(record.get("publicationDate")),
+        "authors": _format_author_briefs_from_mapping(record.get("authors")),
+        "url": cast(str | None, record.get("url")),
+        "venue": cast(str | None, record.get("venue")),
+        "publicationTypes": _normalize_string_list(record.get("publicationTypes")),
+        "citationCount": cast(int | None, record.get("citationCount")),
+        "externalIds": external_ids,
+        "doi": _extract_external_id(external_ids, "DOI"),
+        "pmid": _extract_external_id(external_ids, "PubMed", "PMID"),
+        "arxivId": _extract_external_id(external_ids, "ArXiv"),
+    }
 
 
 def format_paper(paper: PaperLike) -> PaperSummary:
@@ -402,6 +583,27 @@ def format_paper(paper: PaperLike) -> PaperSummary:
         "pmid": _extract_external_id(external_ids, "PubMed", "PMID"),
         "arxivId": _extract_external_id(external_ids, "ArXiv"),
     }
+
+
+def format_paper_record(record: Mapping[str, object], *, include_raw_data: bool = False) -> FlexiblePaperSummary:
+    result = cast(FlexiblePaperSummary, _format_paper_summary_from_mapping(record))
+    match_score = record.get("matchScore")
+    if match_score is not None:
+        result["matchScore"] = cast(float | None, match_score)
+    if "isOpenAccess" in record:
+        result["isOpenAccess"] = cast(bool | None, record.get("isOpenAccess"))
+    open_access_pdf_url = _extract_open_access_pdf_url(record)
+    if open_access_pdf_url is not None:
+        result["openAccessPdfUrl"] = open_access_pdf_url
+    fields_of_study = _normalize_fields_of_study(record)
+    if fields_of_study is not None:
+        result["fieldsOfStudy"] = fields_of_study
+    citation_styles = _normalize_citation_styles(record.get("citationStyles"))
+    if citation_styles is not None:
+        result["citationStyles"] = citation_styles
+    if include_raw_data:
+        result["rawData"] = dict(record)
+    return result
 
 
 def format_related_paper(paper: PaperLike) -> RelatedPaperSummary:
@@ -439,53 +641,58 @@ def format_author(author: AuthorLike) -> AuthorSummary:
     }
 
 
-def _normalize_external_ids(value: object) -> dict[str, str] | None:
-    if not isinstance(value, dict):
-        return None
-    normalized = {str(key): str(raw_value) for key, raw_value in value.items() if raw_value is not None}
-    return normalized or None
-
-
-def _extract_external_id(external_ids: dict[str, str] | None, *candidate_keys: str) -> str | None:
-    if external_ids is None:
-        return None
-    lowered = {key.lower(): value for key, value in external_ids.items()}
-    for key in candidate_keys:
-        value = lowered.get(key.lower())
-        if value:
-            return value
-    return None
+def format_author_record(author: Mapping[str, object]) -> AuthorSummary:
+    return {
+        "authorId": cast(str | None, author.get("authorId")),
+        "name": cast(str | None, author.get("name")),
+        "url": cast(str | None, author.get("url")),
+        "affiliations": _normalize_string_list(author.get("affiliations")),
+        "paperCount": cast(int | None, author.get("paperCount")),
+        "citationCount": cast(int | None, author.get("citationCount")),
+        "hIndex": cast(int | None, author.get("hIndex")),
+    }
 
 
 def format_reference_record(reference: dict[str, object], paper_key: str) -> RelatedPaperSummary:
     paper = cast(dict[str, object], reference.get(paper_key, {}))
-    authors_raw = cast(list[dict[str, object]], paper.get("authors", []))
-    publication_types = paper.get("publicationTypes")
-    external_ids = _normalize_external_ids(paper.get("externalIds"))
+    paper_summary = _format_paper_summary_from_mapping(paper)
     return {
-        "paperId": cast(str | None, paper.get("paperId")),
-        "title": cast(str | None, paper.get("title")),
-        "abstract": cast(str | None, paper.get("abstract")),
-        "year": cast(int | None, paper.get("year")),
-        "publicationDate": _normalize_publication_date(paper.get("publicationDate")),
-        "authors": [
-            {
-                "name": cast(str | None, author.get("name")),
-                "authorId": cast(str | None, author.get("authorId")),
-            }
-            for author in authors_raw
-        ],
-        "url": cast(str | None, paper.get("url")),
-        "venue": cast(str | None, paper.get("venue")),
-        "publicationTypes": cast(list[str] | None, publication_types),
-        "citationCount": cast(int | None, paper.get("citationCount")),
-        "externalIds": external_ids,
-        "doi": _extract_external_id(external_ids, "DOI"),
-        "pmid": _extract_external_id(external_ids, "PubMed", "PMID"),
-        "arxivId": _extract_external_id(external_ids, "ArXiv"),
+        **paper_summary,
         "contexts": cast(list[str] | None, reference.get("contexts")),
         "intents": cast(list[str] | None, reference.get("intents")),
         "isInfluential": cast(bool | None, reference.get("isInfluential")),
+    }
+
+
+def format_bibtex_export(record: Mapping[str, object]) -> BibtexExport:
+    citation_styles = _normalize_citation_styles(record.get("citationStyles"))
+    return {
+        "paperId": cast(str | None, record.get("paperId")),
+        "title": cast(str | None, record.get("title")),
+        "bibtex": citation_styles.get("bibtex") if citation_styles is not None else None,
+    }
+
+
+def format_snippet_record(record: Mapping[str, object], *, include_raw_paper: bool = False) -> SnippetResultItem:
+    paper_raw = cast(Mapping[str, object], record.get("paper", {}))
+    paper: SnippetPaperSummary = {
+        "paperId": cast(str | None, paper_raw.get("paperId")),
+        "corpusId": cast(int | None, paper_raw.get("corpusId")),
+        "title": cast(str | None, paper_raw.get("title")),
+        "authors": _format_author_briefs_from_mapping(paper_raw.get("authors")),
+        "year": cast(int | None, paper_raw.get("year")),
+        "venue": cast(str | None, paper_raw.get("venue")),
+        "url": cast(str | None, paper_raw.get("url")),
+    }
+    open_access_pdf_url = _extract_open_access_pdf_url(paper_raw)
+    if open_access_pdf_url is not None:
+        paper["openAccessPdfUrl"] = open_access_pdf_url
+    if include_raw_paper:
+        paper["rawData"] = dict(paper_raw)
+    return {
+        "score": cast(float | None, record.get("score")),
+        "paper": paper,
+        "snippet": cast(dict[str, object], record.get("snippet", {})),
     }
 
 
@@ -508,10 +715,388 @@ def _loaded_items(results: object) -> Iterable[object]:
     return cast(Iterable[object], results)
 
 
+def _validate_limit(name: str, limit: int, *, max_limit: int) -> None:
+    if limit < 1 or limit > max_limit:
+        raise ValueError(f"{name} must be between 1 and {max_limit}")
+
+
+def _validate_offset(offset: int) -> None:
+    if offset < 0:
+        raise ValueError("offset must be 0 or greater")
+
+
+def _validate_non_empty_query(query: str) -> None:
+    if not query.strip():
+        raise ValueError("query must not be empty")
+
+
+def _clean_string_values(values: Sequence[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    cleaned = [value.strip() for value in values if value.strip()]
+    return cleaned or None
+
+
+def _csv_or_none(values: Sequence[str] | None) -> str | None:
+    cleaned = _clean_string_values(values)
+    if cleaned is None:
+        return None
+    return ",".join(cleaned)
+
+
+def _normalize_fields(fields: Sequence[str] | None) -> list[str] | None:
+    return _clean_string_values(fields)
+
+
+def _resolve_year_filter(year: str | None, start_year: int | None = None, end_year: int | None = None) -> str | None:
+    if year is not None and (start_year is not None or end_year is not None):
+        raise ValueError("Specify either year or start_year/end_year, not both")
+    if year is not None:
+        normalized = year.strip()
+        if not normalized:
+            raise ValueError("year must not be empty")
+        return normalized
+    if start_year is None and end_year is None:
+        return None
+    if start_year is not None and end_year is not None and start_year > end_year:
+        raise ValueError("start_year must be less than or equal to end_year")
+    if start_year is not None and start_year < 0:
+        raise ValueError("start_year must be 0 or greater")
+    if end_year is not None and end_year < 0:
+        raise ValueError("end_year must be 0 or greater")
+    if start_year is not None and end_year is not None:
+        return f"{start_year}-{end_year}"
+    if start_year is not None:
+        return f"{start_year}-"
+    return f"-{end_year}"
+
+
+def _validate_sort(sort: str | None) -> str | None:
+    if sort is None:
+        return None
+    normalized = sort.strip()
+    if not normalized:
+        raise ValueError("sort must not be empty")
+    field, separator, order = normalized.partition(":")
+    if field not in VALID_BULK_SORT_FIELDS:
+        allowed = ", ".join(sorted(VALID_BULK_SORT_FIELDS))
+        raise ValueError(f"sort field must be one of: {allowed}")
+    if separator and order not in {"asc", "desc"}:
+        raise ValueError("sort order must be 'asc' or 'desc'")
+    return normalized
+
+
+def _validate_identifier_list(name: str, identifiers: Sequence[str], *, max_items: int) -> list[str]:
+    cleaned = _clean_string_values(identifiers)
+    if cleaned is None:
+        raise ValueError(f"{name} must not be empty")
+    if len(cleaned) > max_items:
+        raise ValueError(f"{name} must contain at most {max_items} items")
+    return cleaned
+
+
+def _build_relevance_search_params(
+    *,
+    query: str,
+    limit: int,
+    offset: int,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    publication_types: Sequence[str] | None = None,
+    open_access_only: bool = False,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> dict[str, str | int | float]:
+    _validate_non_empty_query(query)
+    _validate_limit("limit", limit, max_limit=100)
+    _validate_offset(offset)
+    params: dict[str, str | int | float] = {
+        "query": query,
+        "limit": limit,
+        "offset": offset,
+    }
+    year_filter = _resolve_year_filter(year, start_year, end_year)
+    if year_filter is not None:
+        params["year"] = year_filter
+    fields_of_study_param = _csv_or_none(fields_of_study)
+    if fields_of_study_param is not None:
+        params["fieldsOfStudy"] = fields_of_study_param
+    publication_types_param = _csv_or_none(publication_types)
+    if publication_types_param is not None:
+        params["publicationTypes"] = publication_types_param
+    if open_access_only:
+        params["openAccessPdf"] = ""
+    if min_citation_count is not None:
+        params["minCitationCount"] = min_citation_count
+    fields_param = _csv_or_none(_normalize_fields(fields))
+    if fields_param is not None:
+        params["fields"] = fields_param
+    return params
+
+
+def _build_bulk_search_params(
+    *,
+    query: str,
+    limit: int,
+    token: str | None = None,
+    sort: str | None = None,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    publication_types: Sequence[str] | None = None,
+    open_access_only: bool = False,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> dict[str, str | int | float]:
+    _validate_non_empty_query(query)
+    _validate_limit("limit", limit, max_limit=1000)
+    params: dict[str, str | int | float] = {
+        "query": query,
+        "limit": limit,
+    }
+    if token is not None:
+        normalized_token = token.strip()
+        if not normalized_token:
+            raise ValueError("token must not be empty")
+        params["token"] = normalized_token
+    sort_param = _validate_sort(sort)
+    if sort_param is not None:
+        params["sort"] = sort_param
+    year_filter = _resolve_year_filter(year, start_year, end_year)
+    if year_filter is not None:
+        params["year"] = year_filter
+    fields_of_study_param = _csv_or_none(fields_of_study)
+    if fields_of_study_param is not None:
+        params["fieldsOfStudy"] = fields_of_study_param
+    publication_types_param = _csv_or_none(publication_types)
+    if publication_types_param is not None:
+        params["publicationTypes"] = publication_types_param
+    if open_access_only:
+        params["openAccessPdf"] = ""
+    if min_citation_count is not None:
+        params["minCitationCount"] = min_citation_count
+    fields_param = _csv_or_none(_normalize_fields(fields))
+    if fields_param is not None:
+        params["fields"] = fields_param
+    return params
+
+
+def _build_title_match_params(
+    *,
+    query: str,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    publication_types: Sequence[str] | None = None,
+    open_access_only: bool = False,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> dict[str, str | int | float]:
+    params = _build_relevance_search_params(
+        query=query,
+        limit=1,
+        offset=0,
+        year=year,
+        start_year=start_year,
+        end_year=end_year,
+        fields_of_study=fields_of_study,
+        publication_types=publication_types,
+        open_access_only=open_access_only,
+        min_citation_count=min_citation_count,
+        fields=fields,
+    )
+    params.pop("limit", None)
+    params.pop("offset", None)
+    return params
+
+
+def _build_snippet_search_params(
+    *,
+    query: str,
+    limit: int,
+    paper_ids: Sequence[str] | None = None,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> dict[str, str | int | float]:
+    _validate_non_empty_query(query)
+    _validate_limit("limit", limit, max_limit=1000)
+    params: dict[str, str | int | float] = {
+        "query": query,
+        "limit": limit,
+    }
+    cleaned_paper_ids = _clean_string_values(paper_ids)
+    if cleaned_paper_ids is not None:
+        if len(cleaned_paper_ids) > 100:
+            raise ValueError("paper_ids must contain at most 100 items")
+        params["paperIds"] = ",".join(cleaned_paper_ids)
+    year_filter = _resolve_year_filter(year, start_year, end_year)
+    if year_filter is not None:
+        params["year"] = year_filter
+    fields_of_study_param = _csv_or_none(fields_of_study)
+    if fields_of_study_param is not None:
+        params["fieldsOfStudy"] = fields_of_study_param
+    if min_citation_count is not None:
+        params["minCitationCount"] = min_citation_count
+    fields_param = _csv_or_none(_normalize_fields(fields))
+    if fields_param is not None:
+        params["fields"] = fields_param
+    return params
+
+
 def search_papers(client: PaperSearchClient, query: str, limit: int = 10) -> list[PaperSummary]:
     """Search for papers using a query string."""
     results = client.search_paper(query, limit=limit)
     return [format_paper(cast(PaperLike, paper)) for paper in _loaded_items(results)]
+
+
+def search_papers_advanced(
+    client: JsonRequestClient,
+    query: str,
+    *,
+    limit: int = 10,
+    offset: int = 0,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    publication_types: Sequence[str] | None = None,
+    open_access_only: bool = False,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> PaperSearchPage:
+    params = _build_relevance_search_params(
+        query=query,
+        limit=limit,
+        offset=offset,
+        year=year,
+        start_year=start_year,
+        end_year=end_year,
+        fields_of_study=fields_of_study,
+        publication_types=publication_types,
+        open_access_only=open_access_only,
+        min_citation_count=min_citation_count,
+        fields=fields or DEFAULT_ADVANCED_PAPER_FIELDS,
+    )
+    response = cast(dict[str, object], client.request_json("GET", "/graph/v1/paper/search", params=params))
+    data = cast(list[dict[str, object]], response.get("data", []))
+    include_raw_data = fields is not None
+    items = [format_paper_record(item, include_raw_data=include_raw_data) for item in data]
+    total = cast(int | None, response.get("total"))
+    next_offset = cast(int | None, response.get("next"))
+    return {
+        "total": total,
+        "offset": cast(int, response.get("offset", offset)),
+        "next": next_offset,
+        "limit": limit,
+        "returned": len(items),
+        "hasMore": next_offset is not None if next_offset is not None else _has_more(total, offset, len(items), limit),
+        "items": items,
+    }
+
+
+def search_papers_bulk(
+    client: JsonRequestClient,
+    query: str,
+    *,
+    limit: int = 100,
+    token: str | None = None,
+    sort: str | None = None,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    publication_types: Sequence[str] | None = None,
+    open_access_only: bool = False,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> BulkPaperSearchPage:
+    params = _build_bulk_search_params(
+        query=query,
+        limit=limit,
+        token=token,
+        sort=sort,
+        year=year,
+        start_year=start_year,
+        end_year=end_year,
+        fields_of_study=fields_of_study,
+        publication_types=publication_types,
+        open_access_only=open_access_only,
+        min_citation_count=min_citation_count,
+        fields=fields or DEFAULT_BULK_PAPER_FIELDS,
+    )
+    response = cast(dict[str, object], client.request_json("GET", "/graph/v1/paper/search/bulk", params=params))
+    data = cast(list[dict[str, object]], response.get("data", []))
+    include_raw_data = fields is not None
+    items = [format_paper_record(item, include_raw_data=include_raw_data) for item in data]
+    next_token = cast(str | None, response.get("token"))
+    return {
+        "total": cast(int | None, response.get("total")),
+        "nextToken": next_token,
+        "limit": limit,
+        "returned": len(items),
+        "hasMore": bool(next_token),
+        "sort": _validate_sort(sort),
+        "items": items,
+    }
+
+
+def get_paper_title_match(
+    client: JsonRequestClient,
+    query: str,
+    *,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    publication_types: Sequence[str] | None = None,
+    open_access_only: bool = False,
+    min_citation_count: int | None = None,
+    fields: Sequence[str] | None = None,
+) -> FlexiblePaperSummary:
+    params = _build_title_match_params(
+        query=query,
+        year=year,
+        start_year=start_year,
+        end_year=end_year,
+        fields_of_study=fields_of_study,
+        publication_types=publication_types,
+        open_access_only=open_access_only,
+        min_citation_count=min_citation_count,
+        fields=fields or DEFAULT_ADVANCED_PAPER_FIELDS,
+    )
+    response = cast(dict[str, object], client.request_json("GET", "/graph/v1/paper/search/match", params=params))
+    return format_paper_record(response, include_raw_data=fields is not None)
+
+
+def get_paper_autocomplete(
+    client: JsonRequestClient,
+    query: str,
+    *,
+    limit: int = 10,
+) -> list[AutocompleteSuggestion]:
+    _validate_non_empty_query(query)
+    _validate_limit("limit", limit, max_limit=100)
+    response = cast(
+        dict[str, object], client.request_json("GET", "/graph/v1/paper/autocomplete", params={"query": query})
+    )
+    matches = cast(list[dict[str, object]], response.get("matches", []))
+    suggestions: list[AutocompleteSuggestion] = [
+        {
+            "id": cast(str | None, match.get("id")),
+            "title": cast(str | None, match.get("title")),
+            "authorsYear": cast(str | None, match.get("authorsYear")),
+        }
+        for match in matches[:limit]
+    ]
+    return suggestions
 
 
 def search_authors(client: AuthorSearchClient, query: str, limit: int = 10) -> list[AuthorSummary]:
@@ -528,6 +1113,24 @@ def get_paper_details(client: PaperDetailsClient, paper_id: str) -> PaperLike:
 def get_author_details(client: AuthorDetailsClient, author_id: str) -> AuthorLike:
     """Get details of a specific author."""
     return client.get_author(author_id)
+
+
+def get_authors_batch(
+    client: JsonRequestClient,
+    author_ids: Sequence[str],
+    *,
+    fields: Sequence[str] | None = None,
+) -> list[AuthorSummary]:
+    cleaned_author_ids = _validate_identifier_list("author_ids", author_ids, max_items=1000)
+    params: dict[str, str | int | float] | None = None
+    fields_param = _csv_or_none(_normalize_fields(fields))
+    if fields_param is not None:
+        params = {"fields": fields_param}
+    response = cast(
+        list[dict[str, object]],
+        client.request_json("POST", "/graph/v1/author/batch", params=params, json_body={"ids": cleaned_author_ids}),
+    )
+    return [format_author_record(author) for author in response]
 
 
 def get_author_papers(client: AuthorPapersClient, author_id: str, limit: int = 10) -> list[PaperSummary]:
@@ -547,10 +1150,117 @@ def get_recommended_papers(
     return [format_paper(paper) for paper in results]
 
 
+def get_multi_recommended_papers(
+    client: JsonRequestClient,
+    positive_paper_ids: Sequence[str],
+    *,
+    negative_paper_ids: Sequence[str] | None = None,
+    limit: int = 25,
+    fields: Sequence[str] | None = None,
+) -> list[FlexiblePaperSummary]:
+    _validate_limit("limit", limit, max_limit=500)
+    positives = _validate_identifier_list("positive_paper_ids", positive_paper_ids, max_items=500)
+    negatives = None
+    if negative_paper_ids is not None:
+        negatives = _validate_identifier_list("negative_paper_ids", negative_paper_ids, max_items=500)
+    params: dict[str, str | int | float] = {
+        "limit": limit,
+        "fields": _csv_or_none(_normalize_fields(fields or DEFAULT_ADVANCED_PAPER_FIELDS)) or "",
+    }
+    body: dict[str, object] = {"positivePaperIds": positives}
+    if negatives is not None:
+        body["negativePaperIds"] = negatives
+    response = cast(
+        dict[str, object],
+        client.request_json("POST", "/recommendations/v1/papers/", params=params, json_body=body),
+    )
+    recommended = cast(list[dict[str, object]], response.get("recommendedPapers", []))
+    include_raw_data = fields is not None
+    return [format_paper_record(paper, include_raw_data=include_raw_data) for paper in recommended]
+
+
 def get_papers_batch(client: PaperBatchClient, paper_ids: list[str]) -> list[PaperSummary]:
     """Get details for multiple papers in one request."""
     results = client.get_papers(paper_ids)
     return [format_paper(paper) for paper in results]
+
+
+def get_bibtex_exports(client: JsonRequestClient, paper_ids: Sequence[str]) -> list[BibtexExport]:
+    cleaned_paper_ids = _validate_identifier_list("paper_ids", paper_ids, max_items=500)
+    response = cast(
+        list[dict[str, object]],
+        client.request_json(
+            "POST",
+            "/graph/v1/paper/batch",
+            params={"fields": ",".join(BIBTEX_FIELDS)},
+            json_body={"ids": cleaned_paper_ids},
+        ),
+    )
+    return [format_bibtex_export(record) for record in response]
+
+
+def search_snippets(
+    client: JsonRequestClient,
+    query: str,
+    *,
+    paper_ids: Sequence[str] | None = None,
+    year: str | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    fields_of_study: Sequence[str] | None = None,
+    min_citation_count: int | None = None,
+    limit: int = 10,
+    fields: Sequence[str] | None = None,
+) -> SnippetSearchResult:
+    params = _build_snippet_search_params(
+        query=query,
+        limit=limit,
+        paper_ids=paper_ids,
+        year=year,
+        start_year=start_year,
+        end_year=end_year,
+        fields_of_study=fields_of_study,
+        min_citation_count=min_citation_count,
+        fields=fields,
+    )
+    response = cast(dict[str, object], client.request_json("GET", "/graph/v1/snippet/search", params=params))
+    data = cast(list[dict[str, object]], response.get("data", []))
+    include_raw_paper = fields is not None
+    items = [format_snippet_record(item, include_raw_paper=include_raw_paper) for item in data]
+    return {
+        "limit": limit,
+        "returned": len(items),
+        "items": items,
+    }
+
+
+def get_server_status(client: StatusClient) -> HealthStatus:
+    retry_config: RetryConfig = {
+        "attempts": RETRY_ATTEMPTS,
+        "minWaitSeconds": RETRY_MIN_WAIT_SECONDS,
+        "maxWaitSeconds": RETRY_MAX_WAIT_SECONDS,
+    }
+    request_config: RequestConfig = {
+        "minSecondsBetweenRequests": MIN_SECONDS_BETWEEN_REQUESTS,
+        "timeoutSeconds": REQUEST_TIMEOUT_SECONDS,
+        "retry": retry_config,
+    }
+    status: HealthStatus = {
+        "version": _package_version(),
+        "apiKeyConfigured": client.api_key_configured,
+        "usingApiKey": client.using_api_key,
+        "apiReachable": False,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "requestConfig": request_config,
+    }
+    try:
+        client.request_json("GET", "/graph/v1/paper/search", params={"query": "semantic scholar", "limit": 1})
+        status["apiReachable"] = True
+        status["usingApiKey"] = client.using_api_key
+    except Exception as exc:
+        status["apiError"] = str(exc)
+        status["usingApiKey"] = client.using_api_key
+    return status
 
 
 def get_citations_and_references(paper: PaperLike) -> CitationsAndReferences:
@@ -576,13 +1286,13 @@ def get_citations_and_references(paper: PaperLike) -> CitationsAndReferences:
 
 
 def _validate_page_args(limit: int, offset: int) -> None:
-    if limit < 1 or limit > 1000:
-        raise ValueError("limit must be between 1 and 1000")
-    if offset < 0:
-        raise ValueError("offset must be 0 or greater")
+    _validate_limit("limit", limit, max_limit=1000)
+    _validate_offset(offset)
 
 
-def get_citations_page(client: CitationsPageClient, paper_id: str, limit: int = 100, offset: int = 0) -> RelatedPaperPage:
+def get_citations_page(
+    client: CitationsPageClient, paper_id: str, limit: int = 100, offset: int = 0
+) -> RelatedPaperPage:
     """Get a paginated page of citations with richer paper metadata."""
     _validate_page_args(limit, offset)
     response = client.get_paper_citations_page(paper_id, limit=limit, offset=offset)
@@ -599,7 +1309,9 @@ def get_citations_page(client: CitationsPageClient, paper_id: str, limit: int = 
     }
 
 
-def get_references_page(client: ReferencesPageClient, paper_id: str, limit: int = 100, offset: int = 0) -> RelatedPaperPage:
+def get_references_page(
+    client: ReferencesPageClient, paper_id: str, limit: int = 100, offset: int = 0
+) -> RelatedPaperPage:
     """Get a paginated page of references with richer paper metadata."""
     _validate_page_args(limit, offset)
     response = client.get_paper_references_page(paper_id, limit=limit, offset=offset)

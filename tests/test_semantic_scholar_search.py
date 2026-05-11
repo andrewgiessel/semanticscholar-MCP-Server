@@ -38,6 +38,20 @@ class PaperStub:
     references: list[PaperStub] = field(default_factory=list)
 
 
+class FakeJsonClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+        self.api_key_configured = False
+        self.using_api_key = False
+
+    def request_json(self, method, path, *, params=None, json_body=None):
+        self.calls.append((method, path, params, json_body))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
 def test_initialize_client_uses_api_key_when_present(monkeypatch):
     monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "test-key")
 
@@ -221,6 +235,398 @@ def test_search_authors_shapes_results():
             "hIndex": 55,
         }
     ]
+
+
+def test_build_relevance_search_params_includes_filters():
+    params = search_module._build_relevance_search_params(
+        query="transformers",
+        limit=25,
+        offset=50,
+        start_year=2019,
+        end_year=2023,
+        fields_of_study=["Computer Science", "Mathematics"],
+        publication_types=["Conference", "JournalArticle"],
+        open_access_only=True,
+        min_citation_count=100,
+        fields=["title", "authors", "citationCount"],
+    )
+
+    assert params == {
+        "query": "transformers",
+        "limit": 25,
+        "offset": 50,
+        "year": "2019-2023",
+        "fieldsOfStudy": "Computer Science,Mathematics",
+        "publicationTypes": "Conference,JournalArticle",
+        "openAccessPdf": "",
+        "minCitationCount": 100,
+        "fields": "title,authors,citationCount",
+    }
+
+
+def test_build_relevance_search_params_rejects_conflicting_year_filters():
+    try:
+        search_module._build_relevance_search_params(
+            query="transformers",
+            limit=10,
+            offset=0,
+            year="2020",
+            start_year=2019,
+            end_year=2020,
+        )
+    except ValueError as exc:
+        assert "either year or start_year/end_year" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_search_papers_advanced_formats_page_and_preserves_raw_data():
+    client = FakeJsonClient(
+        {
+            "total": 120,
+            "offset": 10,
+            "next": 15,
+            "data": [
+                {
+                    "paperId": "paper-1",
+                    "title": "Attention Is All You Need",
+                    "abstract": "Transformers replace recurrence.",
+                    "year": 2017,
+                    "publicationDate": "2017-06-12",
+                    "authors": [{"name": "Ashish Vaswani", "authorId": "author-1"}],
+                    "url": "https://example.com/paper-1",
+                    "venue": "NeurIPS",
+                    "publicationTypes": ["Conference"],
+                    "citationCount": 12345,
+                    "externalIds": {"DOI": "10.5555/test-doi"},
+                    "isOpenAccess": True,
+                    "openAccessPdf": {"url": "https://example.com/paper-1.pdf"},
+                    "fieldsOfStudy": ["Computer Science"],
+                }
+            ],
+        }
+    )
+
+    result = search_module.search_papers_advanced(
+        client,
+        "transformers",
+        limit=5,
+        offset=10,
+        fields=["title", "authors", "isOpenAccess"],
+    )
+
+    assert client.calls == [
+        (
+            "GET",
+            "/graph/v1/paper/search",
+            {
+                "query": "transformers",
+                "limit": 5,
+                "offset": 10,
+                "fields": "title,authors,isOpenAccess",
+            },
+            None,
+        )
+    ]
+    assert result["total"] == 120
+    assert result["next"] == 15
+    assert result["hasMore"] is True
+    assert result["items"][0].get("isOpenAccess") is True
+    assert result["items"][0].get("openAccessPdfUrl") == "https://example.com/paper-1.pdf"
+    assert result["items"][0].get("fieldsOfStudy") == ["Computer Science"]
+    assert result["items"][0].get("rawData", {})["title"] == "Attention Is All You Need"
+
+
+def test_build_bulk_search_params_includes_token_sort_and_filters():
+    params = search_module._build_bulk_search_params(
+        query="graph neural networks",
+        limit=100,
+        token="token-123",
+        sort="citationCount:desc",
+        year="2020-2024",
+        fields_of_study=["Computer Science"],
+        publication_types=["Conference"],
+        open_access_only=True,
+        min_citation_count=50,
+        fields=["title", "year"],
+    )
+
+    assert params == {
+        "query": "graph neural networks",
+        "limit": 100,
+        "token": "token-123",
+        "sort": "citationCount:desc",
+        "year": "2020-2024",
+        "fieldsOfStudy": "Computer Science",
+        "publicationTypes": "Conference",
+        "openAccessPdf": "",
+        "minCitationCount": 50,
+        "fields": "title,year",
+    }
+
+
+def test_search_papers_bulk_formats_token_page():
+    client = FakeJsonClient(
+        {
+            "total": 15117,
+            "token": "next-token",
+            "data": [
+                {
+                    "paperId": "paper-1",
+                    "title": "Bulk Result",
+                    "year": 2021,
+                    "authors": [],
+                    "citationCount": 77,
+                    "fieldsOfStudy": ["Computer Science"],
+                }
+            ],
+        }
+    )
+
+    result = search_module.search_papers_bulk(client, "bulk query", limit=100, sort="paperId")
+
+    assert client.calls == [
+        (
+            "GET",
+            "/graph/v1/paper/search/bulk",
+            {
+                "query": "bulk query",
+                "limit": 100,
+                "sort": "paperId",
+                "fields": "title,abstract,authors,citationCount,externalIds,publicationDate,publicationTypes,url,venue,year,isOpenAccess,openAccessPdf,fieldsOfStudy",
+            },
+            None,
+        )
+    ]
+    assert result["nextToken"] == "next-token"
+    assert result["hasMore"] is True
+    assert result["items"][0].get("fieldsOfStudy") == ["Computer Science"]
+
+
+def test_get_paper_title_match_formats_match_score():
+    client = FakeJsonClient(
+        {
+            "paperId": "paper-1",
+            "title": "Attention Is All You Need",
+            "matchScore": 0.998,
+            "authors": [],
+            "citationCount": 12345,
+        }
+    )
+
+    result = search_module.get_paper_title_match(client, "Attention Is All You Need")
+
+    assert client.calls == [
+        (
+            "GET",
+            "/graph/v1/paper/search/match",
+            {
+                "query": "Attention Is All You Need",
+                "fields": "title,abstract,authors,citationCount,externalIds,publicationDate,publicationTypes,url,venue,year,isOpenAccess,openAccessPdf,fieldsOfStudy",
+            },
+            None,
+        )
+    ]
+    assert result["paperId"] == "paper-1"
+    assert result.get("matchScore") == 0.998
+
+
+def test_get_paper_autocomplete_limits_results():
+    client = FakeJsonClient(
+        {
+            "matches": [
+                {"id": "p1", "title": "Paper 1", "authorsYear": "A et al., 2020"},
+                {"id": "p2", "title": "Paper 2", "authorsYear": "B et al., 2021"},
+            ]
+        }
+    )
+
+    result = search_module.get_paper_autocomplete(client, "pap", limit=1)
+
+    assert client.calls == [("GET", "/graph/v1/paper/autocomplete", {"query": "pap"}, None)]
+    assert result == [{"id": "p1", "title": "Paper 1", "authorsYear": "A et al., 2020"}]
+
+
+def test_get_authors_batch_posts_ids_and_formats():
+    client = FakeJsonClient(
+        [
+            {
+                "authorId": "1741101",
+                "name": "Oren Etzioni",
+                "url": "https://example.com/oren",
+                "affiliations": ["AI2"],
+                "paperCount": 100,
+                "citationCount": 34803,
+                "hIndex": 86,
+            }
+        ]
+    )
+
+    result = search_module.get_authors_batch(client, ["1741101"], fields=["name", "hIndex"])
+
+    assert client.calls == [
+        (
+            "POST",
+            "/graph/v1/author/batch",
+            {"fields": "name,hIndex"},
+            {"ids": ["1741101"]},
+        )
+    ]
+    assert result[0]["name"] == "Oren Etzioni"
+    assert result[0]["hIndex"] == 86
+
+
+def test_get_multi_recommended_papers_posts_body_and_formats():
+    client = FakeJsonClient(
+        {
+            "recommendedPapers": [
+                {
+                    "paperId": "paper-2",
+                    "title": "Recommended",
+                    "authors": [],
+                    "citationCount": 7,
+                    "isOpenAccess": False,
+                }
+            ]
+        }
+    )
+
+    result = search_module.get_multi_recommended_papers(
+        client,
+        ["paper-1"],
+        negative_paper_ids=["paper-x"],
+        limit=20,
+        fields=["title", "citationCount"],
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/recommendations/v1/papers/",
+            {"limit": 20, "fields": "title,citationCount"},
+            {"positivePaperIds": ["paper-1"], "negativePaperIds": ["paper-x"]},
+        )
+    ]
+    assert result[0]["paperId"] == "paper-2"
+    assert result[0].get("rawData", {})["title"] == "Recommended"
+
+
+def test_get_bibtex_exports_formats_batch_response():
+    client = FakeJsonClient(
+        [
+            {
+                "paperId": "paper-1",
+                "title": "Construction of the Literature Graph in Semantic Scholar",
+                "citationStyles": {"bibtex": "@article{demo2024,\n  title={Demo}\n}"},
+            }
+        ]
+    )
+
+    result = search_module.get_bibtex_exports(client, ["paper-1"])
+
+    assert client.calls == [
+        (
+            "POST",
+            "/graph/v1/paper/batch",
+            {"fields": "title,citationStyles"},
+            {"ids": ["paper-1"]},
+        )
+    ]
+    assert result == [
+        {
+            "paperId": "paper-1",
+            "title": "Construction of the Literature Graph in Semantic Scholar",
+            "bibtex": "@article{demo2024,\n  title={Demo}\n}",
+        }
+    ]
+
+
+def test_build_snippet_search_params_includes_filters():
+    params = search_module._build_snippet_search_params(
+        query="literature graph",
+        paper_ids=["paper-1", "paper-2"],
+        start_year=2018,
+        end_year=2020,
+        fields_of_study=["Computer Science"],
+        min_citation_count=25,
+        limit=5,
+        fields=["snippet.text", "snippet.section"],
+    )
+
+    assert params == {
+        "query": "literature graph",
+        "limit": 5,
+        "paperIds": "paper-1,paper-2",
+        "year": "2018-2020",
+        "fieldsOfStudy": "Computer Science",
+        "minCitationCount": 25,
+        "fields": "snippet.text,snippet.section",
+    }
+
+
+def test_search_snippets_formats_results():
+    client = FakeJsonClient(
+        {
+            "data": [
+                {
+                    "score": 0.91,
+                    "paper": {
+                        "paperId": "paper-1",
+                        "corpusId": 215416146,
+                        "title": "Literature Graph",
+                        "authors": [{"name": "Oren Etzioni", "authorId": "1741101"}],
+                        "openAccessInfo": {"openAccessPdf": {"url": "https://example.com/paper.pdf"}},
+                    },
+                    "snippet": {
+                        "text": "In this paper, we discuss the construction of a graph...",
+                        "snippetKind": "body",
+                        "section": "Conclusion",
+                    },
+                }
+            ]
+        }
+    )
+
+    result = search_module.search_snippets(client, "construction of a graph", limit=1, fields=["snippet.text"])
+
+    assert client.calls == [
+        (
+            "GET",
+            "/graph/v1/snippet/search",
+            {"query": "construction of a graph", "limit": 1, "fields": "snippet.text"},
+            None,
+        )
+    ]
+    assert result["returned"] == 1
+    assert result["items"][0]["paper"].get("openAccessPdfUrl") == "https://example.com/paper.pdf"
+    assert result["items"][0]["snippet"]["snippetKind"] == "body"
+
+
+def test_get_server_status_reports_reachability_and_config(monkeypatch):
+    monkeypatch.setattr(search_module, "_package_version", lambda: "0.2.0")
+    client = FakeJsonClient({"total": 1, "data": []})
+    client.api_key_configured = True
+    client.using_api_key = False
+
+    result = search_module.get_server_status(client)
+
+    assert result.get("version") == "0.2.0"
+    assert result.get("apiKeyConfigured") is True
+    assert result.get("usingApiKey") is False
+    assert result.get("apiReachable") is True
+    assert result.get("requestConfig", {})["retry"]["attempts"] == search_module.RETRY_ATTEMPTS
+
+
+def test_get_server_status_reports_api_error(monkeypatch):
+    monkeypatch.setattr(search_module, "_package_version", lambda: "0.2.0")
+    client = FakeJsonClient(RuntimeError("boom"))
+    client.api_key_configured = False
+    client.using_api_key = False
+
+    result = search_module.get_server_status(client)
+
+    assert result.get("apiReachable") is False
+    assert result.get("apiError") == "boom"
 
 
 def test_search_papers_retries_rate_limits(monkeypatch):

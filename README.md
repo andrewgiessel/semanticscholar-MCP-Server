@@ -1,6 +1,6 @@
 # 🎓 Semantic Scholar MCP Server
 
-This project implements a Model Context Protocol (MCP) server for interacting with the Semantic Scholar API. It provides tools for searching papers, retrieving paper and author details, and fetching citations and references.
+This project implements a Model Context Protocol (MCP) server for interacting with the Semantic Scholar API. It provides tools for advanced paper discovery, batch metadata retrieval, recommendations, snippet search, citation export, and author/paper graph traversal.
 
 ## Why This Fork?
 
@@ -10,12 +10,21 @@ The goal of this fork is to keep the original idea while improving packaging, re
 ## ✨ Features
 
 - 🔍 Search for papers on Semantic Scholar
+- 🎛️ Advanced paper search with filters for year ranges, fields of study, publication types, open access, citation thresholds, pagination, and configurable fields
+- 📦 Bulk paper search with token pagination
 - 📄 Retrieve detailed information about specific papers
 - 🗂️ Fetch multiple papers in a batch
+- 🎯 Match a paper by best title
+- ✍️ Get paper autocomplete suggestions
+- 📚 Export BibTeX citations
 - 👤 Get author details
+- 👥 Fetch multiple authors in one request
 - 👥 Search for authors and list their papers
 - 💡 Get recommended papers for a seed paper
+- 🧠 Get recommendations from multiple positive and negative seed papers
+- 🧩 Search text snippets across Semantic Scholar
 - 🔗 Fetch paginated citations and references with rich metadata
+- 🩺 Report server and API health status
 
 ## 📋 Prerequisites
 
@@ -62,20 +71,31 @@ The goal of this fork is to keep the original idea while improving packaging, re
 3. Use an MCP client to interact with the server and access the following tools:
 
    - 🔍 `search_semantic_scholar`: Search for papers using a query string
+   - 🎛️ `search_semantic_scholar_papers_advanced`: Search papers with filters, pagination metadata, and optional raw requested fields
+   - 📦 `search_semantic_scholar_papers_bulk`: Run `/graph/v1/paper/search/bulk` with token pagination
    - 📄 `get_semantic_scholar_paper_details`: Get details of a specific paper
+   - 🎯 `match_semantic_scholar_paper_title`: Find the best title match for a paper query
+   - ✍️ `get_semantic_scholar_paper_autocomplete`: Get autocomplete suggestions for a partial paper query
    - 🗂️ `get_semantic_scholar_papers_batch`: Get details for multiple papers in one request
+   - 📚 `get_semantic_scholar_bibtex`: Export BibTeX entries for one or more paper ids
    - 👤 `get_semantic_scholar_author_details`: Get details of a specific author
+   - 👥 `get_semantic_scholar_authors_batch`: Get details for multiple authors in one request
    - 👥 `search_semantic_scholar_authors`: Search for authors by name
    - 📚 `get_semantic_scholar_author_papers`: Get papers for a specific author
    - 💡 `get_semantic_scholar_recommendations`: Get recommended papers for a seed paper
+   - 🧠 `get_semantic_scholar_recommendations_multi`: Get recommendations from multiple positive and negative seed papers
+   - 🧩 `search_semantic_scholar_snippets`: Search Semantic Scholar text snippets
    - 🔗 `get_semantic_scholar_citations`: Get a paginated page of citations for a paper
    - 🔗 `get_semantic_scholar_references`: Get a paginated page of references for a paper
    - 🔗 `get_semantic_scholar_citations_and_references`: Get bounded pages of both citations and references for a paper
+   - 🩺 `get_semantic_scholar_status`: Report server version, API key state, runtime config, and API reachability
 
 This repository uses the `semanticscholar_mcp_server` Python package as its only entrypoint.
 If `SEMANTIC_SCHOLAR_API_KEY` is configured, the server will try authenticated requests first. If Semantic Scholar responds with `403 Forbidden`, the server automatically disables key usage for the rest of the process and falls back to the public API. All Semantic Scholar requests are client-side throttled to at most 1 request per second, and public API requests also use tenacity-based exponential backoff retries for transient `429` rate limits.
 
 Large citation and reference sets are exposed through paginated tools so large papers stay usable in MCP clients. Related-paper responses include richer fields such as abstract, venue, citation count, publication types, URLs, and external ids when available.
+
+Snippet search uses the same client-side throttling and retry rules as the rest of the server. In practice, the Semantic Scholar snippet endpoint is often one of the first endpoints to expose public-API rate limiting, so the recommendation is to use an API key for sustained snippet-search workflows and to keep snippet `limit` values focused.
 
 ### Behavior Knobs
 
@@ -86,7 +106,67 @@ The following environment variables can be used to tune runtime behavior:
 - `SEMANTIC_SCHOLAR_RETRY_ATTEMPTS`: retry attempts for `429` responses, defaults to `6`
 - `SEMANTIC_SCHOLAR_RETRY_MIN_WAIT_SECONDS`: minimum exponential backoff wait, defaults to `1.0`
 - `SEMANTIC_SCHOLAR_RETRY_MAX_WAIT_SECONDS`: maximum exponential backoff wait, defaults to `30.0`
+- `SEMANTIC_SCHOLAR_REQUEST_TIMEOUT_SECONDS`: per-request timeout, defaults to `30.0`
 - `SEMANTIC_SCHOLAR_LOG_LEVEL`: logging level, defaults to `INFO`
+
+### Example MCP Calls
+
+Advanced paper search with filters:
+
+```json
+{
+  "tool": "search_semantic_scholar_papers_advanced",
+  "arguments": {
+    "query": "retrieval augmented generation",
+    "limit": 5,
+    "start_year": 2022,
+    "end_year": 2025,
+    "fields_of_study": ["Computer Science"],
+    "publication_types": ["Conference", "JournalArticle"],
+    "open_access_only": true,
+    "min_citation_count": 25
+  }
+}
+```
+
+Bulk paper search with token pagination:
+
+```json
+{
+  "tool": "search_semantic_scholar_papers_bulk",
+  "arguments": {
+    "query": "graph neural networks",
+    "limit": 100,
+    "sort": "citationCount:desc"
+  }
+}
+```
+
+Multi-paper recommendations:
+
+```json
+{
+  "tool": "get_semantic_scholar_recommendations_multi",
+  "arguments": {
+    "positive_paper_ids": ["ARXIV:1706.03762", "ARXIV:1810.04805"],
+    "negative_paper_ids": ["ARXIV:1409.0473"],
+    "num_results": 10
+  }
+}
+```
+
+Snippet search:
+
+```json
+{
+  "tool": "search_semantic_scholar_snippets",
+  "arguments": {
+    "query": "construction of a literature graph",
+    "limit": 3,
+    "fields": ["snippet.text", "snippet.section"]
+  }
+}
+```
 
 ## Development
 

@@ -9,6 +9,7 @@
 - Diagnostic command for validating Semantic Scholar API behavior.
 - Unit tests for helper and server layers.
 - Ruff, pyright, pre-commit, and GitHub Actions CI configuration.
+- Advanced filtered paper search, bulk paper search, multi-paper recommendations, title matching, autocomplete, BibTeX export, snippet search, author batch lookup, and status/health MCP tools with docs and validation tests.
 
 ### Changed
 - Documentation rewritten for the maintained fork and public-package workflow.
